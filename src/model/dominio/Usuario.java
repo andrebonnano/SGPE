@@ -1,39 +1,34 @@
+// src/model/dominio/Usuario.java
 package model.dominio;
 
 import model.enums.Perfil;
+import model.vo.CPF;
+import model.vo.Email;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 /**
  * Entidade de domínio que representa um usuário do sistema.
- * Invariantes e validações são aplicadas nos métodos de criação e atualização.
+ * Agora utilizando Value Objects: CPF e Email (imutáveis e validados).
  */
 public final class Usuario {
 
-    private static final Pattern EMAIL_PATTERN =
-            Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$");
-
-    // aceita 11 dígitos ou formato ###.###.###-##
-    private static final Pattern CPF_PATTERN =
-            Pattern.compile("\\d{11}|\\d{3}\\.\\d{3}\\.\\d{3}-\\d{2}");
-
     private final String id;              // UUID
     private String nomeCompleto;
-    private String cpf;                   // armazenado normalizado (apenas dígitos)
-    private String email;
+    private CPF cpf;                      // VO (11 dígitos, com DV)
+    private Email email;                  // VO (normalizado)
     private String cargo;
-    private String login;                 // único
+    private String login;                 // único (validar unicidade no repositório)
     private String senhaHash;             // SHA-256 simples (didático)
     private Perfil perfil;
 
     private Usuario(String id,
                     String nomeCompleto,
-                    String cpf,
-                    String email,
+                    CPF cpf,
+                    Email email,
                     String cargo,
                     String login,
                     String senhaHash,
@@ -48,34 +43,61 @@ public final class Usuario {
         this.perfil = perfil;
     }
 
-    /** Fábrica para criação de usuário com validações e hashing de senha. */
+    /** Fábrica com parâmetros String para CPF/Email (converte para VO). */
     public static Usuario criar(String nomeCompleto,
-                                String cpf,
-                                String email,
+                                String cpfStr,
+                                String emailStr,
                                 String cargo,
                                 String login,
                                 String senhaClara,
                                 Perfil perfil) {
         validarObrigatorio(nomeCompleto, "nomeCompleto");
-        validarCPF(cpf);
-        validarEmail(email);
+        validarObrigatorio(cargo, "cargo");
+        validarLogin(login);
+        Objects.requireNonNull(perfil, "perfil não pode ser nulo");
+        validarSenhaClara(senhaClara);
+
+        CPF cpf = CPF.of(cpfStr);
+        Email email = Email.of(emailStr);
+        String id = UUID.randomUUID().toString();
+        String senhaHash = hashSenha(login, senhaClara);
+
+        return new Usuario(id, nomeCompleto.trim(), cpf, email,
+                cargo.trim(), login.trim(), senhaHash, perfil);
+    }
+
+    /** Fábrica alternativa recebendo VOs. */
+    public static Usuario criar(String nomeCompleto,
+                                CPF cpf,
+                                Email email,
+                                String cargo,
+                                String login,
+                                String senhaClara,
+                                Perfil perfil) {
+        validarObrigatorio(nomeCompleto, "nomeCompleto");
+        Objects.requireNonNull(cpf, "cpf não pode ser nulo");
+        Objects.requireNonNull(email, "email não pode ser nulo");
         validarObrigatorio(cargo, "cargo");
         validarLogin(login);
         Objects.requireNonNull(perfil, "perfil não pode ser nulo");
         validarSenhaClara(senhaClara);
 
         String id = UUID.randomUUID().toString();
-        String cpfNormalizado = normalizarCpf(cpf);
         String senhaHash = hashSenha(login, senhaClara);
-        return new Usuario(id, nomeCompleto.trim(), cpfNormalizado, email.trim(),
+
+        return new Usuario(id, nomeCompleto.trim(), cpf, email,
                 cargo.trim(), login.trim(), senhaHash, perfil);
     }
 
     // ---------- Métodos de domínio (intenção) ----------
 
+    public void alterarEmail(Email novoEmail) {
+        this.email = Objects.requireNonNull(novoEmail, "email não pode ser nulo");
+    }
+
+    /** Overload que aceita String e converte para VO. */
     public void alterarEmail(String novoEmail) {
-        validarEmail(novoEmail);
-        this.email = novoEmail.trim();
+        this.alterarEmail(Email.of(novoEmail));
     }
 
     public void alterarCargo(String novoCargo) {
@@ -110,31 +132,22 @@ public final class Usuario {
 
     public String getId() { return id; }
     public String getNomeCompleto() { return nomeCompleto; }
-    public String getCpf() { return cpf; }
-    public String getEmail() { return email; }
+    public CPF getCpf() { return cpf; }
+    public Email getEmail() { return email; }
     public String getCargo() { return cargo; }
     public String getLogin() { return login; }
     public Perfil getPerfil() { return perfil; }
+
+    // Conveniências de exibição
+    public String getCpfFormatado() { return cpf.formatado(); }
+    public String getCpfMascarado() { return cpf.mascarado(); }
+    public String getEmailValue() { return email.value(); }
 
     // ---------- Validações & utilidades ----------
 
     private static void validarObrigatorio(String valor, String campo) {
         if (valor == null || valor.trim().isEmpty()) {
             throw new IllegalArgumentException("Campo obrigatório não informado: " + campo);
-        }
-    }
-
-    private static void validarEmail(String email) {
-        validarObrigatorio(email, "email");
-        if (!EMAIL_PATTERN.matcher(email.trim()).matches()) {
-            throw new IllegalArgumentException("E-mail inválido.");
-        }
-    }
-
-    private static void validarCPF(String cpf) {
-        validarObrigatorio(cpf, "cpf");
-        if (!CPF_PATTERN.matcher(cpf.trim()).matches()) {
-            throw new IllegalArgumentException("CPF inválido. Use 11 dígitos ou ###.###.###-##");
         }
     }
 
@@ -152,12 +165,8 @@ public final class Usuario {
         }
     }
 
-    private static String normalizarCpf(String cpf) {
-        return cpf.replaceAll("\\D", "");
-    }
-
     private static String hashSenha(String login, String senhaClara) {
-        // Didático: usa login como "sal" simples. Não usar em produção.
+        // Didático: usa login como "sal" simples. Não use em produção.
         String input = login + ":" + senhaClara;
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -177,6 +186,7 @@ public final class Usuario {
         if (this == o) return true;
         if (!(o instanceof Usuario)) return false;
         Usuario usuario = (Usuario) o;
+        // id e login identificam unicamente o usuário
         return Objects.equals(id, usuario.id) &&
                 Objects.equals(login, usuario.login);
     }
@@ -191,8 +201,8 @@ public final class Usuario {
         return "Usuario{" +
                 "id='" + id + '\'' +
                 ", nomeCompleto='" + nomeCompleto + '\'' +
-                ", cpf='***'" +
-                ", email='" + email + '\'' +
+                ", cpf='" + cpf.mascarado() + '\'' +
+                ", email='" + email.value() + '\'' +
                 ", cargo='" + cargo + '\'' +
                 ", login='" + login + '\'' +
                 ", perfil=" + perfil +
